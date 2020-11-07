@@ -47,6 +47,8 @@ var testClientHelloDecoded = &TLS{
 				Version:     0x0301,
 				Length:      209,
 			},
+			1,
+			&TLSClientHello{},
 		},
 	},
 	AppData: nil,
@@ -121,6 +123,8 @@ var testClientKeyExchangeDecoded = &TLS{
 				Version:     0x0301,
 				Length:      70,
 			},
+			16,
+			nil,
 		},
 		{
 			TLSRecordHeader{
@@ -128,6 +132,8 @@ var testClientKeyExchangeDecoded = &TLS{
 				Version:     0x0301,
 				Length:      48,
 			},
+			21,
+			nil,
 		},
 	},
 	AppData: nil,

@@ -361,7 +361,7 @@ func (lp *livePacket) release(*pageCache) int {
 //    3) Call ReassemblyComplete one time, after which the stream is dereferenced by assembly.
 type Stream interface {
 	// Tell whether the TCP packet should be accepted, start could be modified to force a start even if no SYN have been seen
-	Accept(packet *gopacket.Packet, tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, nextSeq Sequence, start *bool, ac AssemblerContext) bool
+	Accept(packet gopacket.Packet, tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, nextSeq Sequence, start *bool, ac AssemblerContext) bool
 
 	// ReassembledSG is called zero or more times.
 	// ScatterGather is reused after each Reassembled call,
@@ -616,7 +616,7 @@ func (asc *assemblerSimpleContext) GetCaptureInfo() gopacket.CaptureInfo {
 
 // Assemble calls AssembleWithContext with the current timestamp, useful for
 // packets being read directly off the wire.
-func (a *Assembler) Assemble(netFlow gopacket.Flow, p *gopacket.Packet, t *layers.TCP) {
+func (a *Assembler) Assemble(netFlow gopacket.Flow, p gopacket.Packet, t *layers.TCP) {
 	ctx := assemblerSimpleContext(gopacket.CaptureInfo{Timestamp: time.Now()})
 	a.AssembleWithContext(netFlow, p, t, &ctx)
 }
@@ -639,7 +639,7 @@ type assemblerAction struct {
 //    zero or one call to StreamFactory.New, creating a stream
 //    zero or one call to ReassembledSG on a single stream
 //    zero or one call to ReassemblyComplete on the same stream
-func (a *Assembler) AssembleWithContext(netFlow gopacket.Flow, p *gopacket.Packet, t *layers.TCP, ac AssemblerContext) {
+func (a *Assembler) AssembleWithContext(netFlow gopacket.Flow, p gopacket.Packet, t *layers.TCP, ac AssemblerContext) {
 	var conn *connection
 	var half *halfconnection
 	var rev *halfconnection
