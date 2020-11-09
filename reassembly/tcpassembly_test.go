@@ -7,8 +7,10 @@
 package reassembly
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
+	"math/rand"
 	"net"
 	"reflect"
 	"runtime"
@@ -21,12 +23,18 @@ import (
 
 var netFlow gopacket.Flow
 
+var testPacket gopacket.Packet
+
 var testDebug = false
 
 func init() {
 	netFlow, _ = gopacket.FlowFromEndpoints(
 		layers.NewIPEndpoint(net.IP{1, 2, 3, 4}),
 		layers.NewIPEndpoint(net.IP{5, 6, 7, 8}))
+	testPacket = gopacket.NewPacket(
+		[]byte(nil),
+		gopacket.DecodePayload,
+		gopacket.Default)
 }
 
 type Reassembly struct {
@@ -48,13 +56,15 @@ type testFactoryBench struct {
 func (t *testFactoryBench) New(a, b gopacket.Flow, tcp *layers.TCP, ac AssemblerContext) Stream {
 	return t
 }
-func (t *testFactoryBench) Accept(tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, seq Sequence, start *bool, ac AssemblerContext) bool {
+func (t *testFactoryBench) Accept(p gopacket.Packet, tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, seq Sequence, start *bool, ac AssemblerContext) bool {
 	return true
 }
 func (t *testFactoryBench) ReassembledSG(sg ScatterGather, ac AssemblerContext) {
 }
 func (t *testFactoryBench) ReassemblyComplete(ac AssemblerContext) bool {
 	return true
+}
+func (t *testFactoryBench) Destroy() {
 }
 
 /* For tests: append bytes */
@@ -86,8 +96,10 @@ func (t *testFactory) ReassemblyComplete(ac AssemblerContext) bool {
 	return true
 }
 
-func (t *testFactory) Accept(tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, seq Sequence, start *bool, ac AssemblerContext) bool {
+func (t *testFactory) Accept(p gopacket.Packet, tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, seq Sequence, start *bool, ac AssemblerContext) bool {
 	return true
+}
+func (t *testFactory) Destroy() {
 }
 
 /* For memory checks: counts bytes */
@@ -98,7 +110,7 @@ type testMemoryFactory struct {
 func (tf *testMemoryFactory) New(a, b gopacket.Flow, tcp *layers.TCP, ac AssemblerContext) Stream {
 	return tf
 }
-func (tf *testMemoryFactory) Accept(tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, seq Sequence, start *bool, ac AssemblerContext) bool {
+func (tf *testMemoryFactory) Accept(p gopacket.Packet, tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, seq Sequence, start *bool, ac AssemblerContext) bool {
 	return true
 }
 func (tf *testMemoryFactory) ReassembledSG(sg ScatterGather, ac AssemblerContext) {
@@ -107,6 +119,8 @@ func (tf *testMemoryFactory) ReassembledSG(sg ScatterGather, ac AssemblerContext
 }
 func (tf *testMemoryFactory) ReassemblyComplete(ac AssemblerContext) bool {
 	return true
+}
+func (tf *testMemoryFactory) Destroy() {
 }
 
 /*
@@ -123,7 +137,7 @@ func test(t *testing.T, s []testSequence) {
 		if testDebug {
 			fmt.Printf("#### test: #%d: sending:%s\n", i, hex.EncodeToString(test.in.BaseLayer.Payload))
 		}
-		a.Assemble(netFlow, &test.in)
+		a.Assemble(netFlow, testPacket, &test.in)
 		final := []Reassembly{}
 		if len(test.want) > 0 {
 			final = append(final, Reassembly{})
@@ -461,8 +475,8 @@ func TestBufferedOverlapCase6(t *testing.T) {
 			in: layers.TCP{
 				SrcPort:   1,
 				DstPort:   2,
-				Seq:       1010,
-				BaseLayer: layers.BaseLayer{Payload: []byte{10, 11, 12, 13, 14}},
+				Seq:       1007,
+				BaseLayer: layers.BaseLayer{Payload: []byte{7, 8, 9, 10, 11, 12, 13, 14}},
 			},
 			want: []Reassembly{},
 		},
@@ -740,7 +754,7 @@ func testFlush(t *testing.T, s []testSequence, delay time.Duration, flushInterva
 			flow = flow.Reverse()
 		}
 		ctx := assemblerSimpleContext(gopacket.CaptureInfo{Timestamp: simTime})
-		a.AssembleWithContext(flow, &test.in, &ctx)
+		a.AssembleWithContext(flow, testPacket, &test.in, &ctx)
 		simTime = simTime.Add(delay)
 		a.FlushCloseOlderThan(simTime.Add(-1 * flushInterval))
 
@@ -945,7 +959,10 @@ func (tkf *testKeepFactory) ReassemblyComplete(ac AssemblerContext) bool {
 	return true
 }
 
-func (tkf *testKeepFactory) Accept(tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, seq Sequence, start *bool, ac AssemblerContext) bool {
+func (tkf *testKeepFactory) Destroy() {
+}
+
+func (tkf *testKeepFactory) Accept(p gopacket.Packet, tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, seq Sequence, start *bool, ac AssemblerContext) bool {
 	return true
 }
 
@@ -954,6 +971,7 @@ type testKeepSequence struct {
 	keep    int
 	want    []byte
 	skipped int
+	flush   bool
 }
 
 func testKeep(t *testing.T, s []testKeepSequence) {
@@ -979,7 +997,7 @@ func testKeep(t *testing.T, s []testKeepSequence) {
 		if testDebug {
 			fmt.Printf("#### testKeep: #%d: sending:%s\n", i, hex.EncodeToString(test.tcp.BaseLayer.Payload))
 		}
-		a.Assemble(flow, &test.tcp)
+		a.Assemble(flow, testPacket, &test.tcp)
 		if !reflect.DeepEqual(fact.bytes, test.want) {
 			t.Fatalf("#%d: invalid bytes: got %v, expected %v", i, fact.bytes, test.want)
 		}
@@ -988,6 +1006,10 @@ func testKeep(t *testing.T, s []testKeepSequence) {
 		}
 		if testDebug {
 			fmt.Printf("#### testKeep: #%d: bytes: %s\n", i, hex.EncodeToString(fact.bytes))
+		}
+
+		if test.flush {
+			a.FlushAll()
 		}
 	}
 }
@@ -1192,6 +1214,44 @@ func TestKeepWithFlush(t *testing.T) {
 	})
 }
 
+func TestKeepWithOutOfOrderPacketAndManualFlush(t *testing.T) {
+	makePayload := func(length int) []byte {
+		data := make([]byte, length)
+		rand.Read(data)
+		return data
+	}
+
+	// The first packet is received out of order. It contains `pageBytes + 1`
+	// number of bytes, so it spans 2 pages.
+	// The second packet carries a single byte before the first packet, and we
+	// request to keep `pageBytes` bytes. Then trigger a flush.
+	// Prior to a fix, this would result in an slice bounds out of range panic
+	// when the code tries to incorrectly skip the leading bytes on the second
+	// page of the first packet.
+	testKeep(t, []testKeepSequence{
+		{
+			tcp: layers.TCP{
+				SrcPort:   1,
+				DstPort:   2,
+				Seq:       1001,
+				BaseLayer: layers.BaseLayer{Payload: makePayload(pageBytes + 1)},
+			},
+			want: []byte{},
+		},
+		{
+			tcp: layers.TCP{
+				SrcPort:   1,
+				DstPort:   2,
+				Seq:       1000,
+				BaseLayer: layers.BaseLayer{Payload: []byte{1}},
+			},
+			keep:  pageBytes,
+			want:  []byte{},
+			flush: true,
+		},
+	})
+}
+
 /*
  * FSM tests
  */
@@ -1209,8 +1269,10 @@ func (t *testFSMFactory) ReassembledSG(sg ScatterGather, ac AssemblerContext) {
 func (t *testFSMFactory) ReassemblyComplete(ac AssemblerContext) bool {
 	return false
 }
+func (t *testFSMFactory) Destroy() {
+}
 
-func (t *testFSMFactory) Accept(tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, seq Sequence, start *bool, ac AssemblerContext) bool {
+func (t *testFSMFactory) Accept(p gopacket.Packet, tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, seq Sequence, start *bool, ac AssemblerContext) bool {
 	ok := t.fsm.CheckState(tcp, dir)
 	if ok {
 		t.nb++
@@ -1247,7 +1309,7 @@ func testFSM(t *testing.T, s []testFSMSequence) {
 			flow = flow.Reverse()
 		}
 		test.tcp.SetInternalPortsForTesting()
-		a.AssembleWithContext(flow, &test.tcp, &test)
+		a.AssembleWithContext(flow, testPacket, &test.tcp, &test)
 		if fact.nb != test.nb {
 			t.Fatalf("#%d: packet rejected: got %d, expected %d", i, fact.nb, test.nb)
 		}
@@ -1675,7 +1737,7 @@ func TestMemoryShrink(t *testing.T) {
 	run := 1050
 	// Allocate > initial
 	for i := 0; i < run; i++ {
-		a.Assemble(netFlow, &tcp)
+		a.Assemble(netFlow, testPacket, &tcp)
 		if tcp.SYN {
 			tcp.SYN = false
 			tcp.Seq += 1 + 1
@@ -1693,7 +1755,7 @@ func TestMemoryShrink(t *testing.T) {
 	// Do ~ initial allocs+free()
 	run *= 2
 	for i := 0; i < run; i++ {
-		a.Assemble(netFlow, &tcp)
+		a.Assemble(netFlow, testPacket, &tcp)
 		if i%50 == 0 {
 			a.FlushAll()
 		}
@@ -1719,7 +1781,7 @@ func BenchmarkSingleStreamNo(b *testing.B) {
 	}
 	a := NewAssembler(NewStreamPool(&testFactoryBench{}))
 	for i := 0; i < b.N; i++ {
-		a.Assemble(netFlow, &t)
+		a.Assemble(netFlow, testPacket, &t)
 		if t.SYN {
 			t.SYN = false
 			t.Seq++
@@ -1745,7 +1807,7 @@ func BenchmarkSingleStreamSkips(b *testing.B) {
 		} else if skipped {
 			t.Seq -= 20
 		}
-		a.Assemble(netFlow, &t)
+		a.Assemble(netFlow, testPacket, &t)
 		if t.SYN {
 			t.SYN = false
 			t.Seq++
@@ -1768,7 +1830,7 @@ func BenchmarkSingleStreamLoss(b *testing.B) {
 	}
 	a := NewAssembler(NewStreamPool(&testFactoryBench{}))
 	for i := 0; i < b.N; i++ {
-		a.Assemble(netFlow, &t)
+		a.Assemble(netFlow, testPacket, &t)
 		t.SYN = false
 		t.Seq += 11
 	}
@@ -1784,7 +1846,7 @@ func BenchmarkMultiStreamGrow(b *testing.B) {
 	a := NewAssembler(NewStreamPool(&testFactoryBench{}))
 	for i := 0; i < b.N; i++ {
 		t.SrcPort = layers.TCPPort(i)
-		a.Assemble(netFlow, &t)
+		a.Assemble(netFlow, testPacket, &t)
 		t.Seq += 10
 	}
 }
@@ -1800,7 +1862,7 @@ func BenchmarkMultiStreamConn(b *testing.B) {
 	a := NewAssembler(NewStreamPool(&testFactoryBench{}))
 	for i := 0; i < b.N; i++ {
 		t.SrcPort = layers.TCPPort(i)
-		a.Assemble(netFlow, &t)
+		a.Assemble(netFlow, testPacket, &t)
 		if i%65536 == 65535 {
 			if t.SYN {
 				t.SYN = false
@@ -1840,8 +1902,8 @@ func TestFullyOrderedAndCompleteStreamDoesNotAlloc(t *testing.T) {
 
 	ctx := &testMemoryContext{}
 	// First packet
-	a.AssembleWithContext(netFlow, &c2s, ctx)
-	a.AssembleWithContext(netFlow.Reverse(), &s2c, ctx)
+	a.AssembleWithContext(netFlow, testPacket, &c2s, ctx)
+	a.AssembleWithContext(netFlow.Reverse(), testPacket, &s2c, ctx)
 	c2s.SYN, s2c.SYN = false, false
 	c2s.ACK = true
 	c2s.Seq++
@@ -1852,8 +1914,8 @@ func TestFullyOrderedAndCompleteStreamDoesNotAlloc(t *testing.T) {
 		s2c.Seq += 10
 		c2s.Ack += 10
 		s2c.Ack += 10
-		a.AssembleWithContext(netFlow, &c2s, ctx)
-		a.AssembleWithContext(netFlow.Reverse(), &s2c, ctx)
+		a.AssembleWithContext(netFlow, testPacket, &c2s, ctx)
+		a.AssembleWithContext(netFlow.Reverse(), testPacket, &s2c, ctx)
 	}); n > 0 {
 		t.Error(n, "mallocs for normal TCP stream")
 	}
@@ -1861,5 +1923,67 @@ func TestFullyOrderedAndCompleteStreamDoesNotAlloc(t *testing.T) {
 	// +1 for first packet and +1 because AllocsPerRun seems to run fun N+1 times.
 	if tf.bytes != 10*2*(N+1+1) {
 		t.Error(tf.bytes, "bytes handled, expected", 10*2*(N+1+1))
+	}
+}
+
+type testCustomContext int
+
+func (c testCustomContext) GetCaptureInfo() gopacket.CaptureInfo {
+	// We're just abusing the InterfaceIndex to identify the context, no other
+	// meaning here.
+	return gopacket.CaptureInfo{InterfaceIndex: int(c)}
+}
+
+// Make sure reassemblyObject.CaptureInfo conforms to ScatterGather interface.
+func TestReassemblyObjectCaptureInfo(t *testing.T) {
+	// Add 20 bytes worth of data into a reassemblyObject.
+	all := []byteContainer{
+		&page{
+			bytes: bytes.Repeat([]byte("1"), 10),
+			ac:    testCustomContext(1203),
+		},
+		&livePacket{
+			bytes: bytes.Repeat([]byte("1"), 10),
+			ac:    testCustomContext(794598214),
+		},
+	}
+	ro := &reassemblyObject{all: all}
+
+	testCases := []struct {
+		offset   int
+		expected testCustomContext
+	}{
+		{
+			offset: -1,
+		},
+		{
+			offset:   0,
+			expected: testCustomContext(1203),
+		},
+		{
+			offset:   5,
+			expected: testCustomContext(1203),
+		},
+		{
+			offset:   10,
+			expected: testCustomContext(794598214),
+		},
+		{
+			offset:   19,
+			expected: testCustomContext(794598214),
+		},
+		{
+			offset: 20,
+		},
+		{
+			offset: 1000000,
+		},
+	}
+	for _, c := range testCases {
+		expected := c.expected.GetCaptureInfo()
+		ci := ro.CaptureInfo(c.offset)
+		if !reflect.DeepEqual(expected, ci) {
+			t.Errorf("test CaptureInfo(%d):\nwant: %v\n got: %v\n", c.offset, expected, ci)
+		}
 	}
 }

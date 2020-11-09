@@ -156,16 +156,16 @@ func (rl *reassemblyObject) KeepFrom(offset int) {
 }
 
 func (rl *reassemblyObject) CaptureInfo(offset int) gopacket.CaptureInfo {
+	if offset < 0 {
+		return gopacket.CaptureInfo{}
+	}
+
 	current := 0
-	var r byteContainer
-	for _, r = range rl.all {
-		if current >= offset {
+	for _, r := range rl.all {
+		if current+r.length() > offset {
 			return r.captureInfo()
 		}
 		current += r.length()
-	}
-	if r != nil && current >= offset {
-		return r.captureInfo()
 	}
 	// Invalid offset
 	return gopacket.CaptureInfo{}
@@ -284,7 +284,6 @@ type livePacket struct {
 	bytes []byte
 	start bool
 	end   bool
-	ci    gopacket.CaptureInfo
 	ac    AssemblerContext
 	seq   Sequence
 }
@@ -293,7 +292,7 @@ func (lp *livePacket) getBytes() []byte {
 	return lp.bytes
 }
 func (lp *livePacket) captureInfo() gopacket.CaptureInfo {
-	return lp.ci
+	return lp.ac.GetCaptureInfo()
 }
 func (lp *livePacket) assemblerContext() AssemblerContext {
 	return lp.ac
@@ -317,7 +316,7 @@ func (lp *livePacket) isPacket() bool {
 // Creates a page (or set of pages) from a TCP packet: returns the first and last
 // page in its doubly-linked list of new pages.
 func (lp *livePacket) convertToPages(pc *pageCache, skip int, ac AssemblerContext) (*page, *page, int) {
-	ts := lp.ci.Timestamp
+	ts := lp.captureInfo().Timestamp
 	first := pc.next(ts)
 	current := first
 	current.prev = nil
@@ -362,7 +361,7 @@ func (lp *livePacket) release(*pageCache) int {
 //    3) Call ReassemblyComplete one time, after which the stream is dereferenced by assembly.
 type Stream interface {
 	// Tell whether the TCP packet should be accepted, start could be modified to force a start even if no SYN have been seen
-	Accept(packet *gopacket.Packet, tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, nextSeq Sequence, start *bool, ac AssemblerContext) bool
+	Accept(packet gopacket.Packet, tcp *layers.TCP, ci gopacket.CaptureInfo, dir TCPFlowDirection, nextSeq Sequence, start *bool, ac AssemblerContext) bool
 
 	// ReassembledSG is called zero or more times.
 	// ScatterGather is reused after each Reassembled call,
@@ -617,7 +616,7 @@ func (asc *assemblerSimpleContext) GetCaptureInfo() gopacket.CaptureInfo {
 
 // Assemble calls AssembleWithContext with the current timestamp, useful for
 // packets being read directly off the wire.
-func (a *Assembler) Assemble(netFlow gopacket.Flow, p *gopacket.Packet, t *layers.TCP) {
+func (a *Assembler) Assemble(netFlow gopacket.Flow, p gopacket.Packet, t *layers.TCP) {
 	ctx := assemblerSimpleContext(gopacket.CaptureInfo{Timestamp: time.Now()})
 	a.AssembleWithContext(netFlow, p, t, &ctx)
 }
@@ -640,7 +639,7 @@ type assemblerAction struct {
 //    zero or one call to StreamFactory.New, creating a stream
 //    zero or one call to ReassembledSG on a single stream
 //    zero or one call to ReassemblyComplete on the same stream
-func (a *Assembler) AssembleWithContext(netFlow gopacket.Flow, p *gopacket.Packet, t *layers.TCP, ac AssemblerContext) {
+func (a *Assembler) AssembleWithContext(netFlow gopacket.Flow, p gopacket.Packet, t *layers.TCP, ac AssemblerContext) {
 	var conn *connection
 	var half *halfconnection
 	var rev *halfconnection
@@ -726,7 +725,7 @@ func (a *Assembler) AssembleWithContext(netFlow gopacket.Flow, p *gopacket.Packe
 		}
 	}
 
-	action = a.handleBytes(bytes, seq, half, ci, t.SYN, t.RST || t.FIN, action, ac)
+	action = a.handleBytes(bytes, seq, half, t.SYN, t.RST || t.FIN, action, ac)
 	if len(a.ret) > 0 {
 		action.nextSeq = a.sendToConnection(conn, half, ac)
 	}
@@ -838,7 +837,7 @@ func (a *Assembler) checkOverlap(half *halfconnection, queue bool, ac AssemblerC
 		} else
 
 		// end < cur.end && start > cur.start: replace bytes inside cur (6)
-		if diffEnd > 0 && diffStart < 0 {
+		if diffEnd >= 0 && diffStart <= 0 {
 			if *debugLog {
 				log.Printf("case 6\n")
 			}
@@ -959,12 +958,11 @@ func (a *Assembler) overlapExisting(half *halfconnection, start, end Sequence, b
 }
 
 // Prepare send or queue
-func (a *Assembler) handleBytes(bytes []byte, seq Sequence, half *halfconnection, ci gopacket.CaptureInfo, start bool, end bool, action assemblerAction, ac AssemblerContext) assemblerAction {
+func (a *Assembler) handleBytes(bytes []byte, seq Sequence, half *halfconnection, start bool, end bool, action assemblerAction, ac AssemblerContext) assemblerAction {
 	a.cacheLP.bytes = bytes
 	a.cacheLP.start = start
 	a.cacheLP.end = end
 	a.cacheLP.seq = seq
-	a.cacheLP.ci = ci
 	a.cacheLP.ac = ac
 
 	if action.queue {
@@ -1076,7 +1074,16 @@ func (a *Assembler) cleanSG(half *halfconnection, ac AssemblerContext) {
 	half.saved = nil
 	var saved *page
 	for _, r := range a.cacheSG.all[ndx:] {
+		preConvertLen := r.length()
 		first, last, nb := r.convertToPages(a.pc, skip, ac)
+
+		// Update skip count as we move from one container to the next.
+		if delta := preConvertLen - r.length(); delta > skip {
+			skip = 0
+		} else {
+			skip -= delta
+		}
+
 		if half.saved == nil {
 			half.saved = first
 		} else {
