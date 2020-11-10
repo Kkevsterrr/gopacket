@@ -21,8 +21,9 @@ const (
 
 // TLS extension numbers
 const (
-	extensionServerName           uint16 = 0
-	extensionEncryptedClientHello uint16 = 0xff02
+	extensionServerName uint16 = 0
+	// https://tlswg.org/draft-ietf-tls-esni/draft-ietf-tls-esni.html
+	extensionEncryptedClientHello uint16 = 0xfe08
 )
 
 // TLSHandshakeRecord defines the structure of a Handshare Record
