@@ -22,8 +22,6 @@ const (
 // TLS extension numbers
 const (
 	extensionServerName uint16 = 0
-	// https://tlswg.org/draft-ietf-tls-esni/draft-ietf-tls-esni.html
-	extensionEncryptedClientHello uint16 = 0xfe08
 )
 
 // TLSHandshakeRecord defines the structure of a Handshare Record
@@ -35,8 +33,8 @@ type TLSHandshakeRecord struct {
 }
 
 type TLSClientHello struct {
-	ServerName           string
-	EncryptedClientHello bool
+	ServerName string
+	Extensions []uint16
 }
 
 // DecodeFromBytes decodes the slice into the TLS struct.
@@ -77,7 +75,10 @@ func (t *TLSHandshakeRecord) decodeFromBytes(h TLSRecordHeader, data []byte, df 
 	// Attempt to decode client hello fields
 	clientHello, ok := m.(*clientHelloMsg)
 	if ok {
-		t.ClientHello = &TLSClientHello{clientHello.serverName, clientHello.encryptedClientHello}
+		t.ClientHello = &TLSClientHello{
+			ServerName: clientHello.serverName,
+			Extensions: clientHello.extensions,
+		}
 	}
 
 	return nil
@@ -88,9 +89,9 @@ type handshakeMessage interface {
 }
 
 type clientHelloMsg struct {
-	raw                  []byte
-	serverName           string
-	encryptedClientHello bool
+	raw        []byte
+	serverName string
+	extensions []uint16
 }
 
 // Mostly copied from https://golang.org/src/crypto/tls/
@@ -125,6 +126,8 @@ func (m *clientHelloMsg) unmarshal(data []byte) bool {
 			return false
 		}
 
+		m.extensions = append(m.extensions, extension)
+
 		switch extension {
 		case extensionServerName:
 			// RFC 6066, Section 3
@@ -153,9 +156,6 @@ func (m *clientHelloMsg) unmarshal(data []byte) bool {
 					return false
 				}
 			}
-		case extensionEncryptedClientHello:
-			// https://tools.ietf.org/html/draft-ietf-tls-esni-08
-			m.encryptedClientHello = true
 		default:
 			// Ignore unknown extensions.
 			continue
